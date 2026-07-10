@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "outlook-copilot"
+version = "1.0.0"
+description = "Outlook Copilot CLI & OpenAI-compatible API server"
+requires-python = ">=3.10"
+dependencies = [
+    "websockets>=12",
+    "cryptography>=41",
+]
+
+[project.scripts]
+outlook-copilot = "outlook_copilot.servers.cli:main"
+outlook-copilot-server = "outlook_copilot.servers.openai:main"
+outlook-copilot-setup = "outlook_copilot.scripts.setup_wizard:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
