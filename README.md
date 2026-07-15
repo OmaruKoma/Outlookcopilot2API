@@ -1,7 +1,7 @@
 # Outlook Copilot 2 API
 
 > 将 Microsoft 365 Outlook Copilot 的 SignalR WebSocket 协议包装成 OpenAI / Anthropic 兼容的 HTTP API。  
-> 基于 [M365-Copilot2API](https://github.com/anomalyco/M365-Copilot2API) 修改，适配 Outlook OwaHub 端点，支持 **Claude Opus 4.7** 及 **GPT-5.5 / GPT-5.6** 模型。
+> 基于 [M365-Copilot2API](https://github.com/anomalyco/M365-Copilot2API) 修改，适配 Outlook OwaHub 端点，支持 **Claude Opus 4.8** 及 **GPT-5.5 / GPT-5.6** 模型。
 
 ---
 
@@ -55,30 +55,29 @@ pip install -e .
 outlook-copilot-setup
 ```
 
-向导分两步：
+向导会自动打开浏览器窗口，引导你登录 Microsoft 账户并自动提取所需配置。
 
-### 步骤 1 — 获取 OID / Tenant
+### 浏览器自动登录（推荐）
 
-1. 打开 https://outlook.cloud.microsoft 并登录
-2. 按 F12 打开 DevTools → **Console**
-3. 粘贴运行以下代码：
+1. 选择 `[1] 浏览器自动登录` 回车
+2. 在弹出的浏览器窗口中登录 Microsoft 账户（勾选"保持登录"）
+3. 登录后自动提取租户 ID、用户 OID 和 access_token
+4. 配置自动保存到 `.env` 和 `data/tokens/`
 
-```js
-(() => {const k = Object.keys(localStorage).find(k => k.includes('|refreshtoken|'));if (!k) return JSON.stringify({error:'NOT_FOUND: 请先登录 outlook.cloud.microsoft'});const parts = k.split('|');const idParts = parts[1].split('.');return JSON.stringify({oid:idParts[0], tenant:idParts[1]});})()
+### 手动配置（备选）
+
+选择 `[2] 手动配置` 后，按指引从浏览器 DevTools 复制信息。
+
+### 自动刷新（可选）
+
+```bash
+# 安装浏览器依赖（一次性）
+pip install -e '.[browser]'
+playwright install chromium
+
+# 带自动刷新的方式启动服务
+outlook-copilot-server --auto-refresh --port 8000
 ```
-
-4. 将控制台输出的 JSON（包含 `oid` 和 `tenant`）粘贴回终端
-
-### 步骤 2 — 获取 access_token
-
-1. 保持 outlook.cloud.microsoft 打开
-2. F12 → **Network** → 筛选输入 `ws`
-3. 刷新页面（F5）
-4. 点击列表中的 `substrate.office.com` WebSocket 请求
-5. 在 URL 末尾找到 `access_token=eyJ...`，**完整复制**（约 2000+ 字符）
-6. 粘贴回终端
-
-配置完成后，系统会自动保存 `.env` 文件及 Token 到 `data/tokens/` 目录。
 
 ---
 
@@ -163,7 +162,7 @@ OUTLOOK_COPILOT_API_KEY=your-secret-key outlook-copilot-server --host 0.0.0.0 --
 | `gpt-5.5` | `Gpt_5_5_Chat` | `gpt-5.5` | **GPT-5.5 快速答复** |
 | `gpt-5.6` | `Gpt_5_6_Reasoning` | `gpt-5.6` | **GPT-5.6 Think Deeper** |
 
-> Anthropic 端点会自动映射模型名：`claude-opus-4.8` / `claude-opus-4.7` → `opus`，`gpt-5.6` → `gpt-5.6`，`gpt-5.5` / `gpt-5` / `gpt-4` → `auto`
+> Anthropic 端点会自动映射模型名：`claude-opus-4.8` → `opus`，`gpt-5.6` → `gpt-5.6`，`gpt-5.5` / `gpt-5` / `gpt-4` → `auto`
 
 ### OpenAI Chat 调用示例
 
@@ -229,7 +228,7 @@ print(response.choices[0].text)
 curl http://localhost:8000/v1/messages \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "claude-opus-4.7",
+    "model": "claude-opus-4.8",
     "messages": [{"role": "user", "content": "你好"}],
     "system": "你是一个助手",
     "stream": true
@@ -241,7 +240,7 @@ import anthropic
 
 client = anthropic.Anthropic(base_url="http://localhost:8000", api_key="ignored")
 response = client.messages.create(
-    model="claude-opus-4.7",
+    model="claude-opus-4.8",
     messages=[{"role": "user", "content": "你好"}],
     system="你是一个助手",
     stream=True,
@@ -255,7 +254,7 @@ for event in response:
 
 ```python
 response = client.messages.create(
-    model="claude-opus-4.7",
+    model="claude-opus-4.8",
     messages=[{"role": "user", "content": "你好"}],
 )
 print(response.content[0].text)
@@ -267,14 +266,14 @@ print(response.content[0].text)
 curl http://localhost:8000/v1/complete \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "claude-opus-4.7",
+    "model": "claude-opus-4.8",
     "prompt": "人类：你好\n\n助手："
   }'
 ```
 
 ```python
 response = client.completions.create(
-    model="claude-opus-4.7",
+    model="claude-opus-4.8",
     prompt="人类：你好\n\n助手：",
 )
 print(response.completion)
