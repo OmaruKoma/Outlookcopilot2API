@@ -2,7 +2,7 @@
 Outlook Copilot 一键配置向导
 运行: python -m outlook_copilot.scripts.setup_wizard
 """
-import os, sys, json, re
+import os, sys, json, re, time, urllib.parse
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() not in ('utf-8', 'utf8'):
     try:
@@ -16,6 +16,18 @@ BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "
 DATA_DIR = os.path.join(BASE_DIR, "data", "tokens")
 ENV_FILE = os.path.join(BASE_DIR, ".env")
 
+HOST_URL = os.environ.get(
+    "OUTLOOK_COPILOT_HOST_URL",
+    "https://outlook.cloud.microsoft/host/b5abf2ae-c16b-4310-8f8a-d3bcdb52f162/entity1-d870f6cd-4aa5-4d42-9626-ab690c041429",
+)
+
+EDITOR_SELECTORS = [
+    "#m365-chat-editor-target-element",
+    '[aria-label="向 Copilot 发送消息"]',
+    '[data-lexical-editor="true"]',
+    '[role="textbox"][contenteditable="true"]',
+]
+
 
 def step(title):
     print(f"\n{'='*60}")
@@ -23,64 +35,27 @@ def step(title):
     print(f"{'='*60}")
 
 
-def extract_from_console_output(raw: str):
-    """Parse tenant, oid from browser console output."""
-    raw = re.sub(r'^粘贴\s*=>\s*', '', raw)
-    raw = re.sub(r'^PS\s+[^>]+>\s*', '', raw)
-    raw = re.sub(r'^>\s*', '', raw)
-
-    tenant = oid = None
-
-    m_oid = re.search(r"OID:\s*([a-f0-9-]+)", raw)
-    m_tenant = re.search(r"TENANT:\s*([a-f0-9-]+)", raw)
-    if m_oid and m_tenant:
-        oid = m_oid.group(1)
-        tenant = m_tenant.group(1)
-
-    if not tenant or not oid:
-        m = re.search(r"\{", raw)
-        if m:
-            start = m.start()
-            depth = 0
-            in_string = False
-            escape = False
-            for i in range(start, len(raw)):
-                c = raw[i]
-                if escape:
-                    escape = False
-                    continue
-                if c == '\\' and in_string:
-                    escape = True
-                    continue
-                if c == '"' and not escape:
-                    in_string = not in_string
-                    continue
-                if not in_string:
-                    if c == '{':
-                        depth += 1
-                    elif c == '}':
-                        depth -= 1
-                        if depth == 0:
-                            try:
-                                data = json.loads(raw[start:i+1])
-                                tenant = tenant or data.get("tenant")
-                                oid = oid or data.get("oid")
-                            except json.JSONDecodeError:
-                                pass
-                            break
-
-    return tenant, oid
+def save_env(tenant, oid):
+    env_content = f"""# Outlook Copilot Configuration
+M365_TENANT_ID={tenant}
+M365_USER_OID={oid}
+M365_CLIENT_ID={CLIENT_ID}
+"""
+    with open(ENV_FILE, "w") as f:
+        f.write(env_content)
+    print(f"  环境变量已保存 → {ENV_FILE}")
 
 
-def get_config_from_browser():
-    step("步骤 1: 从浏览器获取配置")
+# ── Manual fallback helpers ──────────────────────────────────────────────
+
+def manual_oid_tenant_step():
+    """手动从 DevTools Console 获取 OID/Tenant"""
+    step("手动获取 OID / Tenant")
     print()
     print("请在浏览器中完成以下操作:")
     print("  1. 打开 https://outlook.cloud.microsoft 并登录")
     print("  2. 按 F12 打开 DevTools → Console")
     print("  3. 粘贴运行下面这行代码:")
-    print()
-    print("  (复制下面完整的一行)")
     print()
     print("-" * 60)
     js_snippet = (
@@ -98,33 +73,29 @@ def get_config_from_browser():
     print("  请复制控制台输出的 JSON（从 { 到 } 的完整内容）")
     print("  如果显示 error 字段，请确认已在 outlook.cloud.microsoft 登录后重试")
     print()
-    print("=" * 60)
-    print("【请复制从这里开始 ==================================】")
-    print("=" * 60)
-    print()
-    print("  提示: 只粘贴 JSON 部分（从 { 开始到 } 结束），不要带 === 标记")
-    print()
 
     raw = input("粘贴 => ").strip()
     if not raw:
         print("错误: 未输入任何内容")
         sys.exit(1)
 
+    raw = re.sub(r'^粘贴\s*=>\s*', '', raw)
+    raw = re.sub(r'^PS\s+[^>]+>\s*', '', raw)
+    raw = re.sub(r'^>\s*', '', raw)
+
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
-        tenant, oid = extract_from_console_output(raw)
-        if not tenant or not oid:
-            print("错误: 无法解析输出，请确认 Console 输出的是完整 JSON")
-            print("提示: 只粘贴从 { 开始到 } 结束的部分")
-            sys.exit(1)
-    else:
-        if "error" in data:
-            print(f"错误: {data['error']}")
-            sys.exit(1)
-        tenant = data.get("tenant")
-        oid = data.get("oid")
+        print("错误: 无法解析输出，请确认 Console 输出的是完整 JSON")
+        print("提示: 只粘贴从 { 开始到 } 结束的部分")
+        sys.exit(1)
 
+    if "error" in data:
+        print(f"错误: {data['error']}")
+        sys.exit(1)
+
+    tenant = data.get("tenant")
+    oid = data.get("oid")
     if not tenant or not oid:
         print("错误: 无法获取 Tenant ID 或 User OID")
         sys.exit(1)
@@ -133,7 +104,8 @@ def get_config_from_browser():
 
 
 def token_extract_step():
-    step("步骤 2: 从浏览器 Network 提取 access_token")
+    """手动从 DevTools Network 提取 access_token"""
+    step("手动提取 access_token")
     print()
     print("操作步骤（共 7 步）:")
     print()
@@ -178,38 +150,218 @@ def token_extract_step():
     print(f"\n  过期后重新运行: outlook-copilot --refresh")
 
 
-def save_env(tenant, oid):
-    env_content = f"""# Outlook Copilot Configuration
-M365_TENANT_ID={tenant}
-M365_USER_OID={oid}
-M365_CLIENT_ID={CLIENT_ID}
-"""
-    with open(ENV_FILE, "w") as f:
-        f.write(env_content)
-    print(f"  环境变量已保存 → {ENV_FILE}")
+# ── Browser auto-login ──────────────────────────────────────────────────
 
+def _is_target_ws(ws_url):
+    try:
+        parsed = urllib.parse.urlparse(ws_url)
+        return parsed.hostname == "substrate.office.com" and "/m365Copilot/Chathub/" in parsed.path
+    except Exception:
+        return False
+
+
+def _extract_token_from_ws_url(ws_url):
+    try:
+        parsed = urllib.parse.urlparse(ws_url)
+        qs = urllib.parse.parse_qs(parsed.query)
+        vals = qs.get("access_token")
+        return vals[0] if vals else None
+    except Exception:
+        return None
+
+
+def _find_editor(page):
+    for sel in EDITOR_SELECTORS:
+        loc = page.locator(sel)
+        try:
+            if loc.count() > 0:
+                return loc.first
+        except Exception:
+            pass
+    for frame in page.frames:
+        if frame == page.main_frame:
+            continue
+        for sel in EDITOR_SELECTORS:
+            try:
+                loc = frame.locator(sel)
+                if loc.count() > 0:
+                    return loc.first
+            except Exception:
+                pass
+    return None
+
+
+def browser_full_setup():
+    """Playwright 全自动：打开浏览器 → 登录 → 提取 OID/Tenant → 抓取 Token"""
+    import base64
+
+    step("浏览器自动登录")
+    print()
+    print("  即将打开浏览器窗口，请登录 Microsoft 账户并勾选'保持登录'。")
+    print("  登录后会自动提取全部配置，无需任何手动操作。")
+    print()
+    input("  按回车继续（确保已安装 playwright + chromium）...")
+
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as e:
+        print(f"  导入失败: {e}")
+        print("  请先运行: pip install -e '.[browser]' && playwright install chromium")
+        sys.exit(1)
+
+    token_file = os.path.join(DATA_DIR, "token.txt")
+    cache_file = os.path.join(DATA_DIR, "token_cache.json")
+    profile_dir = os.path.join(BASE_DIR, "data", "browser_profile")
+    os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(profile_dir, exist_ok=True)
+
+    captured = {"url": None}
+
+    with sync_playwright() as p:
+        ctx = p.chromium.launch_persistent_context(
+            user_data_dir=profile_dir,
+            headless=False,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-first-run",
+            ],
+        )
+        try:
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+
+            def on_ws(ws):
+                if captured["url"] is None and _is_target_ws(ws.url):
+                    captured["url"] = ws.url
+
+            page.on("websocket", on_ws)
+
+            # ── Phase 1: Login + OID/Tenant ──
+            print()
+            print("  正在打开 outlook.cloud.microsoft ...")
+            page.goto("https://outlook.cloud.microsoft", wait_until="domcontentloaded",
+                      timeout=60000)
+
+            if "login.microsoftonline.com" in page.url:
+                print("  请在浏览器中登录 Microsoft 账户（勾选'保持登录'）...")
+                deadline = time.time() + 300
+                while time.time() < deadline:
+                    if "login.microsoftonline.com" not in page.url:
+                        page.wait_for_timeout(3000)
+                        break
+                    page.wait_for_timeout(1000)
+                else:
+                    print("  错误: 登录超时")
+                    sys.exit(1)
+                page.goto("https://outlook.cloud.microsoft", wait_until="domcontentloaded",
+                          timeout=60000)
+
+            print("  正在提取租户 ID 和用户 OID ...")
+            result = page.evaluate("""() => {
+                const k = Object.keys(localStorage).find(k => k.includes('|refreshtoken|'));
+                if (!k) return null;
+                const parts = k.split('|');
+                const idParts = parts[1].split('.');
+                return {oid: idParts[0], tenant: idParts[1]};
+            }""")
+            if not (result and result.get("tenant") and result.get("oid")):
+                print("  错误: 未能从浏览器提取 OID/Tenant，请确认已登录")
+                sys.exit(1)
+
+            tenant = result["tenant"]
+            oid = result["oid"]
+            print(f"  Tenant ID: {tenant}")
+            print(f"  User OID:  {oid}")
+            save_env(tenant, oid)
+
+            # ── Phase 2: Token capture ──
+            print()
+            print("  正在导航到 Copilot 页面并抓取 access_token ...")
+            page.goto(HOST_URL, wait_until="domcontentloaded", timeout=60000)
+
+            if "login.microsoftonline.com" in page.url:
+                print("  错误: 浏览器未成功登录，请重试")
+                sys.exit(1)
+
+            try:
+                page.wait_for_load_state("networkidle", timeout=30000)
+            except Exception:
+                pass
+            try:
+                page.wait_for_selector(EDITOR_SELECTORS[0], timeout=30000, state="attached")
+            except Exception:
+                pass
+
+            editor = _find_editor(page)
+            deadline = time.time() + 30
+            while editor is None and time.time() < deadline:
+                page.wait_for_timeout(1000)
+                editor = _find_editor(page)
+
+            if editor is None:
+                print("  错误: 找不到 Copilot 输入框，页面 UI 可能已改变")
+                sys.exit(1)
+
+            editor.click()
+            page.wait_for_timeout(300)
+            page.keyboard.type("a")
+
+            capture_deadline = time.time() + 45
+            while captured["url"] is None and time.time() < capture_deadline:
+                page.wait_for_timeout(250)
+
+            if captured["url"] is None:
+                print("  错误: 未捕获到 Copilot WebSocket 连接")
+                sys.exit(1)
+
+            token = _extract_token_from_ws_url(captured["url"])
+            if not token:
+                print("  错误: WebSocket URL 中未找到 access_token")
+                sys.exit(1)
+
+            try:
+                padded = token.split(".")[1] + "==="
+                claims = json.loads(base64.urlsafe_b64decode(padded))
+                exp = claims.get("exp", 0)
+            except Exception:
+                exp = 0
+            if exp <= time.time():
+                print("  错误: 抓取的 token 已过期")
+                sys.exit(1)
+
+            with open(token_file, "w") as f:
+                f.write(token)
+            with open(cache_file, "w") as f:
+                json.dump({"access_token": token, "expires_at": exp}, f)
+
+            print(f"  Token 已保存 → {token_file}")
+            exp_str = time.strftime("%H:%M:%S", time.localtime(exp))
+            print(f"  （{len(token)} 字符，有效期至 {exp_str}）")
+        finally:
+            try:
+                ctx.close()
+            except Exception:
+                pass
+
+
+# ── Main ────────────────────────────────────────────────────────────────
 
 def main():
     print("=" * 60)
-    print("  Outlook Copilot 配置向导 v1.0")
+    print("  Outlook Copilot 配置向导 v2.0")
     print("=" * 60)
     print()
-
-    tenant, oid = get_config_from_browser()
-    save_env(tenant, oid)
-    os.makedirs(DATA_DIR, exist_ok=True)
-
-    step("步骤 2: 选择 Token 获取方式")
-    print()
-    print("  [1] 自动模式（推荐）— 用 Playwright 浏览器登录一次，之后自动刷新")
+    print("  [1] 浏览器自动登录（推荐）— 打开浏览器，登录后自动提取全部配置")
     print("      需要: pip install -e '.[browser]' && playwright install chromium")
-    print("  [2] 手动模式 — 从 DevTools 复制 access_token（每小时过期需重复）")
+    print("  [2] 手动配置 — 从浏览器 DevTools 复制信息")
     print()
     choice = input("选择 [1/2]（默认 1）=> ").strip() or "1"
 
     if choice == "1":
-        auto_login_step()
+        browser_full_setup()
     else:
+        tenant, oid = manual_oid_tenant_step()
+        save_env(tenant, oid)
+        os.makedirs(DATA_DIR, exist_ok=True)
         token_extract_step()
 
     step("配置完成!")
@@ -234,29 +386,6 @@ def main():
         print("Token 过期后:")
         print("  1. F12 → Network → ws → 刷新 → substrate 请求 → 复制 access_token")
         print("  2. outlook-copilot --refresh")
-
-
-def auto_login_step():
-    step("步骤 2: 浏览器登录并抓取首个 Token")
-    print()
-    print("  即将打开浏览器窗口，请登录 Microsoft 账户并勾选“保持登录”。")
-    print("  登录后会自动抓取 access_token 并保存。")
-    print()
-    input("  按回车继续（确保已安装 playwright + chromium）...")
-    try:
-        from outlook_copilot.browser_auth import fetch_token_blocking, BrowserAuthError
-    except ImportError as e:
-        print(f"  导入失败: {e}")
-        print("  请先运行: pip install -e '.[browser]' && playwright install chromium")
-        sys.exit(1)
-    token_file = os.path.join(DATA_DIR, "token.txt")
-    cache_file = os.path.join(DATA_DIR, "token_cache.json")
-    profile_dir = os.path.join(BASE_DIR, "data", "browser_profile")
-    try:
-        fetch_token_blocking(profile_dir, token_file, cache_file, headless=False)
-    except BrowserAuthError as e:
-        print(f"  抓取失败: {e}")
-        sys.exit(1)
 
 
 if __name__ == "__main__":
