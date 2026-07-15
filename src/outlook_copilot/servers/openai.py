@@ -79,6 +79,24 @@ MAX_BODY_BYTES = int(os.environ.get("OUTLOOK_COPILOT_MAX_BODY_BYTES", 10 * 1024 
 # client blocks when the pool is exhausted, providing natural backpressure.
 POOL_SIZE = int(os.environ.get("OUTLOOK_COPILOT_POOL_SIZE", 8))
 
+# Automatic token refresh via a headless logged-in browser (Playwright).
+AUTO_REFRESH = os.environ.get("OUTLOOK_COPILOT_AUTO_REFRESH", "0").strip() in ("1", "true", "yes")
+# Refresh this many seconds before the token expires.
+REFRESH_MARGIN = int(os.environ.get("OUTLOOK_COPILOT_REFRESH_MARGIN", 300))
+# Run the refresh browser headless (set to 0 only for debugging).
+BROWSER_HEADLESS = os.environ.get("OUTLOOK_COPILOT_BROWSER_HEADLESS", "1").strip() in ("1", "true", "yes")
+# How often the refresher wakes up to re-check expiry (seconds).
+REFRESH_POLL_INTERVAL = int(os.environ.get("OUTLOOK_COPILOT_REFRESH_POLL", 30))
+PROFILE_DIR = os.path.join(BASE_DIR, "data", "browser_profile")
+
+# Server-side default session. The M365 Copilot backend ignores client-replayed
+# messageHistory (verified empirically); the only way to keep multi-turn context
+# is its own ConversationId, which we map from a session key. Many OpenAI-compatible
+# clients cannot set a custom X-Session-Id header or session_id/user field, so a
+# server-wide default session lets those clients share one conversation with zero
+# client config. Per-request session_id / X-Session-Id / user still override it.
+DEFAULT_SESSION_ID = os.environ.get("OUTLOOK_COPILOT_SESSION_ID", "").strip() or None
+
 _SENTINEL = object()
 
 
@@ -146,15 +164,103 @@ class ClientPool:
             self._q.put(client)
 
 
+class TokenRefresher:
+    """Refreshes the access_token by driving a logged-in browser. Runs its own
+    daemon thread (Playwright's sync API cannot share a thread with an asyncio
+    loop) and refreshes proactively before expiry. A lock ensures only one
+    browser instance runs at a time, and also lets on-demand callers (the
+    TokenManager provider hook) piggyback on the same serialized refresh."""
+
+    def __init__(self, token_file, cache_file, profile_dir):
+        self.token_file = token_file
+        self.cache_file = cache_file
+        self.profile_dir = profile_dir
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = None
+
+    def _current_exp(self):
+        """Return the current token's exp (unix ts), or 0 if none/invalid."""
+        try:
+            with open(self.cache_file) as f:
+                return float(json.load(f).get("expires_at", 0))
+        except Exception:
+            pass
+        try:
+            with open(self.token_file) as f:
+                token = f.read().strip()
+            claims = _decode_jwt(token)
+            return float(claims.get("exp", 0)) if claims else 0
+        except Exception:
+            return 0
+
+    def refresh_now(self):
+        """Synchronously refresh the token. Serialized via the lock so that
+        concurrent callers wait for the in-flight refresh instead of launching
+        multiple browsers. Returns the fresh access_token, or None on failure.
+
+        If another thread refreshed while this caller waited on the lock, the
+        already-fresh token is returned without launching a second browser."""
+        with self._lock:
+            # Another caller may have just refreshed while we waited; reuse it.
+            exp = self._current_exp()
+            if exp - time.time() > REFRESH_MARGIN:
+                try:
+                    with open(self.token_file) as f:
+                        existing = f.read().strip()
+                    if existing:
+                        return existing
+                except Exception:
+                    pass
+            from ..browser_auth import fetch_token_blocking
+            token, _ = fetch_token_blocking(
+                self.profile_dir, self.token_file, self.cache_file,
+                headless=BROWSER_HEADLESS,
+            )
+            return token
+
+    def _loop(self):
+        while not self._stop.is_set():
+            try:
+                exp = self._current_exp()
+                now = time.time()
+                if exp - now <= REFRESH_MARGIN:
+                    logging.info("token near expiry; refreshing via browser")
+                    self.refresh_now()
+            except Exception:
+                logging.exception("background token refresh failed")
+            self._stop.wait(REFRESH_POLL_INTERVAL)
+
+    def start(self):
+        self._thread = threading.Thread(target=self._loop, name="token-refresher", daemon=True)
+        self._thread.start()
+
+
+def _decode_jwt(token):
+    try:
+        import base64
+        parts = token.split(".")
+        padded = parts[1] + "=" * (-len(parts[1]) % 4)
+        return json.loads(base64.urlsafe_b64decode(padded))
+    except Exception:
+        return None
+
+
 _bg = None
 _pool = None
 _tm = None
+_refresher = None
 
 
 def _init_runtime():
-    global _bg, _pool, _tm
+    global _bg, _pool, _tm, _refresher
     _bg = _BackgroundLoop()
     _tm = TokenManager(TENANT_ID, CLIENT_ID, SCOPE, RT_FILE, CACHE_FILE, TOKEN_FILE)
+    if AUTO_REFRESH:
+        _refresher = TokenRefresher(TOKEN_FILE, CACHE_FILE, PROFILE_DIR)
+        # On-demand hook: if a request finds the token expired before the
+        # background thread refreshed it, refresh inline (serialized).
+        _tm.token_provider = _refresher.refresh_now
     _pool = ClientPool(POOL_SIZE, lambda: M365Client(_tm))
 
 
@@ -166,9 +272,16 @@ class OpenAIHandler(http.server.BaseHTTPRequestHandler):
     _session_lock = threading.Lock()
     _session_max = int(os.environ.get("OUTLOOK_COPILOT_SESSION_MAX", 1000))
     _session_ttl = int(os.environ.get("OUTLOOK_COPILOT_SESSION_TTL", 3600))
+    # Server-wide default session key; None means requests are isolated unless
+    # they carry their own session identifier. Set via --session-id / env.
+    default_session_id = DEFAULT_SESSION_ID
 
     def _get_conv_id(self, req):
-        sid = req.get("session_id") or self.headers.get("X-Session-Id") or req.get("user")
+        # Per-request identifiers take precedence; fall back to the server-wide
+        # default session so clients that cannot set headers/fields still share
+        # one conversation.
+        sid = (req.get("session_id") or self.headers.get("X-Session-Id")
+               or req.get("user") or self.default_session_id)
         if not sid:
             return None
         now = time.time()
@@ -593,7 +706,23 @@ def main():
     parser.add_argument("--port", type=int, default=8000, help="listen port")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="bind address")
     parser.add_argument("--setup", action="store_true", help="first time setup")
+    parser.add_argument("--login", action="store_true",
+                        help="open a browser to sign in and capture the first token (headed)")
+    parser.add_argument("--auto-refresh", action="store_true",
+                        help="auto-refresh the token via a headless browser before expiry")
+    parser.add_argument("--session-id", nargs="?", const="__auto__", default=None,
+                        metavar="ID",
+                        help="share one conversation across requests that carry no "
+                             "session identifier. Pass an ID for a stable session, or "
+                             "omit the value to generate a random per-run session.")
     args = parser.parse_args()
+
+    global AUTO_REFRESH, DEFAULT_SESSION_ID
+    if args.auto_refresh:
+        AUTO_REFRESH = True
+    if args.session_id is not None:
+        DEFAULT_SESSION_ID = uuid.uuid4().hex if args.session_id == "__auto__" else args.session_id
+        OpenAIHandler.default_session_id = DEFAULT_SESSION_ID
 
     if not TENANT_ID or not USER_OID:
         print("Error: M365_TENANT_ID and M365_USER_OID not configured")
@@ -608,18 +737,43 @@ def main():
         setup_main()
         return
 
-    if not os.path.exists(RT_FILE) and not os.path.exists(TOKEN_FILE):
-        print("First time: outlook-copilot-setup")
-        sys.exit(1)
+    if args.login:
+        from ..browser_auth import fetch_token_blocking, BrowserAuthError
+        try:
+            fetch_token_blocking(PROFILE_DIR, TOKEN_FILE, CACHE_FILE, headless=False)
+            print("登录并抓取首个 token 成功。现在可用 --auto-refresh 或 "
+                  "OUTLOOK_COPILOT_AUTO_REFRESH=1 启动自动刷新。")
+        except BrowserAuthError as e:
+            print(f"登录失败: {e}")
+            sys.exit(1)
+        return
 
+    token_ok = False
     try:
         tm.get()
+        token_ok = True
         print("Token OK")
     except Exception as e:
-        print(f"Token failed: {e}")
-        sys.exit(1)
+        if AUTO_REFRESH:
+            print(f"No valid token yet ({e}); will fetch via browser on startup.")
+        else:
+            print(f"Token failed: {e}")
+            sys.exit(1)
 
     _init_runtime()
+
+    if AUTO_REFRESH and _refresher is not None:
+        if not token_ok:
+            # No usable token yet: fetch one synchronously before serving.
+            try:
+                _refresher.refresh_now()
+                print("Token fetched via browser.")
+            except Exception as e:
+                print(f"Initial browser token fetch failed: {e}")
+                print("Run: outlook-copilot --login  (headed sign-in)")
+                sys.exit(1)
+        _refresher.start()
+        print(f"  auto-refresh: on (margin {REFRESH_MARGIN}s, headless={BROWSER_HEADLESS})")
 
     if not API_KEY and args.host not in ("127.0.0.1", "localhost", "::1"):
         print("WARNING: binding to a non-loopback address without authentication.")
@@ -635,6 +789,11 @@ def main():
     print(f"  POST /v1/complete           (Anthropic FIM)")
     print(f"  GET  /v1/models             (model list)")
     print(f"  auth: {'Bearer token required' if API_KEY else 'open (no API key set)'}")
+    if OpenAIHandler.default_session_id:
+        print(f"  default session: {OpenAIHandler.default_session_id} "
+              f"(requests without a session id share one conversation)")
+    else:
+        print(f"  default session: off (requests are isolated unless they carry a session id)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

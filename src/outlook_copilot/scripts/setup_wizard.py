@@ -198,7 +198,19 @@ def main():
     tenant, oid = get_config_from_browser()
     save_env(tenant, oid)
     os.makedirs(DATA_DIR, exist_ok=True)
-    token_extract_step()
+
+    step("步骤 2: 选择 Token 获取方式")
+    print()
+    print("  [1] 自动模式（推荐）— 用 Playwright 浏览器登录一次，之后自动刷新")
+    print("      需要: pip install -e '.[browser]' && playwright install chromium")
+    print("  [2] 手动模式 — 从 DevTools 复制 access_token（每小时过期需重复）")
+    print()
+    choice = input("选择 [1/2]（默认 1）=> ").strip() or "1"
+
+    if choice == "1":
+        auto_login_step()
+    else:
+        token_extract_step()
 
     step("配置完成!")
     print()
@@ -211,9 +223,40 @@ def main():
     print(f"Token 存储: {DATA_DIR}")
     print(f"配置文件:   {ENV_FILE}")
     print()
-    print("Token 过期后:")
-    print("  1. F12 → Network → ws → 刷新 → substrate 请求 → 复制 access_token")
-    print("  2. outlook-copilot --refresh")
+    if choice == "1":
+        print("自动刷新（无人值守）:")
+        print("  outlook-copilot-server --auto-refresh --port 8000")
+        print("  或设置 OUTLOOK_COPILOT_AUTO_REFRESH=1")
+        print()
+        print("登录态失效后重新登录:")
+        print("  outlook-copilot --login")
+    else:
+        print("Token 过期后:")
+        print("  1. F12 → Network → ws → 刷新 → substrate 请求 → 复制 access_token")
+        print("  2. outlook-copilot --refresh")
+
+
+def auto_login_step():
+    step("步骤 2: 浏览器登录并抓取首个 Token")
+    print()
+    print("  即将打开浏览器窗口，请登录 Microsoft 账户并勾选“保持登录”。")
+    print("  登录后会自动抓取 access_token 并保存。")
+    print()
+    input("  按回车继续（确保已安装 playwright + chromium）...")
+    try:
+        from outlook_copilot.browser_auth import fetch_token_blocking, BrowserAuthError
+    except ImportError as e:
+        print(f"  导入失败: {e}")
+        print("  请先运行: pip install -e '.[browser]' && playwright install chromium")
+        sys.exit(1)
+    token_file = os.path.join(DATA_DIR, "token.txt")
+    cache_file = os.path.join(DATA_DIR, "token_cache.json")
+    profile_dir = os.path.join(BASE_DIR, "data", "browser_profile")
+    try:
+        fetch_token_blocking(profile_dir, token_file, cache_file, headless=False)
+    except BrowserAuthError as e:
+        print(f"  抓取失败: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

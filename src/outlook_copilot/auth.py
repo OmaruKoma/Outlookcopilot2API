@@ -10,13 +10,19 @@ class TokenRefreshError(Exception):
 
 
 class TokenManager:
-    def __init__(self, tenant, client_id, scope, rt_file, cache_file, token_file=None):
+    def __init__(self, tenant, client_id, scope, rt_file, cache_file, token_file=None,
+                 token_provider=None):
         self.tenant = tenant
         self.client_id = client_id
         self.scope = scope
         self.rt_file = rt_file
         self.cache_file = cache_file
         self.token_file = token_file
+        # Optional zero-arg callable that fetches a fresh access token on
+        # demand (e.g. browser automation). Used by get() when no cached or
+        # refresh-token path is available. Should return the token string or
+        # raise on failure.
+        self.token_provider = token_provider
         self._token_url = TOKEN_URL.format(tenant=tenant)
 
     def _read_rt(self):
@@ -89,6 +95,13 @@ class TokenManager:
                 return cache['access_token']
         except Exception:
             pass
+        # No valid cached/manual token. Prefer an on-demand provider (e.g. the
+        # browser-based extractor) when configured; this covers the window
+        # where a background refresher has not yet produced a fresh token.
+        if self.token_provider is not None:
+            token = self.token_provider()
+            if token:
+                return token
         if not os.path.exists(self.rt_file):
             raise TokenRefreshError(
                 "Refresh token not found. "

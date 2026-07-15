@@ -24,6 +24,8 @@ def main():
     parser.add_argument("--token", help="save an access token and connect (extract from WebSocket URL)")
     parser.add_argument("-c", "--conversation", action="store_true", help="conversation mode (same context)")
     parser.add_argument("--refresh", action="store_true", help="update access_token via bookmarklet")
+    parser.add_argument("--login", action="store_true",
+                        help="open a browser to sign in and capture a token automatically")
     args = parser.parse_args()
 
     if args.list_models:
@@ -47,6 +49,16 @@ def main():
             print("Error: M365_TENANT_ID not configured")
             return
         tm.refresh_interactive()
+        return
+
+    if args.login:
+        from ..browser_auth import fetch_token_blocking, BrowserAuthError
+        profile_dir = os.path.join(BASE_DIR, "data", "browser_profile")
+        try:
+            fetch_token_blocking(profile_dir, TOKEN_FILE, CACHE_FILE, headless=False)
+            print("登录并抓取 token 成功。")
+        except BrowserAuthError as e:
+            print(f"登录失败: {e}")
         return
 
     if args.setup:

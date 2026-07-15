@@ -280,9 +280,16 @@ response = client.completions.create(
 print(response.completion)
 ```
 
-### 设置会话 ID（保持上下文）
+### 多轮上下文（保持对话记忆）
 
-通过 `X-Session-Id` 请求头或请求体中的 `session_id` 字段，可以让多轮请求共享同一对话上下文：
+> **重要**：M365 Copilot 后端**不使用**客户端回放的 `messages` 历史来维持上下文（已实测验证）。标准 OpenAI 客户端每次发完整历史数组的方式在这个后端上**无效**。唯一能保持多轮记忆的机制是后端自己的 `ConversationId`，本服务通过"会话标识"映射到它。
+
+一次请求要归入同一对话，可用以下任一方式提供会话标识（优先级从高到低）：
+
+1. 请求体 `session_id` 字段
+2. 请求头 `X-Session-Id`
+3. 请求体 `user` 字段（OpenAI SDK 原生支持，无需自定义头）
+4. 服务端 `--session-id` 默认会话（见下）
 
 ```bash
 curl http://localhost:8000/v1/chat/completions \
@@ -291,13 +298,62 @@ curl http://localhost:8000/v1/chat/completions \
   -d '{"model":"auto","messages":[{"role":"user","content":"记住我的名字是小明"}],"stream":true}'
 ```
 
+### 服务端默认会话 `--session-id`
+
+很多 OpenAI 兼容客户端既不能设自定义请求头，也不方便传 `session_id`/`user` 字段。为此可在启动服务时指定一个**服务端默认会话**，让所有"没带会话标识"的请求自动共享同一对话，客户端零配置即有上下文：
+
+```bash
+# 固定会话 ID（重启后仍是同一对话）
+outlook-copilot-server --port 8000 --session-id my-chat
+
+# 省略值：本次运行生成随机会话，重启则新开对话
+outlook-copilot-server --port 8000 --session-id
+
+# 也可用环境变量（方便 Docker / systemd）
+OUTLOOK_COPILOT_SESSION_ID=my-chat outlook-copilot-server --port 8000
+```
+
+- 请求若自带 `session_id` / `X-Session-Id` / `user`，仍会**覆盖**默认会话，进入各自独立的对话。
+- 不设 `--session-id` 时，无标识请求彼此隔离（每次全新对话）。
+- 注意：默认会话意味着所有无标识请求的历史会**串到一起**。个人单线使用没问题；若同时进行不相关的多个话题，请用请求级标识区分。
+
 ---
 
 ## Token 管理
 
-access_token 有效期约 **75 分钟**，过期后需要更新。
+access_token 有效期约 **1 小时**，过期后需要更新。
 
-### 方法 1：交互式刷新（推荐）
+> **背景**：真正能连 Copilot 的 access_token 由微软后端通过 OBO 交换生成（需 `client_secret`），第三方无法用 refresh token 续期。该 token 只在浏览器已登录、向 Copilot 输入框输入字符时出现在 substrate WebSocket 的 URL 中。因此"自动刷新"依赖驱动一个已登录的浏览器去捕获它。
+
+### 方法 0：浏览器自动刷新（推荐，无人值守）
+
+用 Playwright 复用一个已登录的浏览器 profile，在 token 到期前自动重新捕获，服务可长期运行无需人工干预。
+
+```bash
+# 1. 安装浏览器依赖（一次性）
+pip install -e '.[browser]'
+playwright install chromium
+
+# 2. 首次登录（headed，手动登录一次，勾选"保持登录"）
+outlook-copilot --login
+
+# 3. 启动服务并开启自动刷新（之后 headless 无人值守）
+outlook-copilot-server --auto-refresh --port 8000
+# 或用环境变量：OUTLOOK_COPILOT_AUTO_REFRESH=1
+```
+
+相关环境变量：
+
+| 变量 | 默认 | 说明 |
+|------|------|------|
+| `OUTLOOK_COPILOT_AUTO_REFRESH` | `0` | 设为 `1` 开启后台自动刷新 |
+| `OUTLOOK_COPILOT_REFRESH_MARGIN` | `300` | 到期前多少秒开始刷新 |
+| `OUTLOOK_COPILOT_BROWSER_HEADLESS` | `1` | 刷新浏览器是否 headless（调试设 `0`） |
+| `OUTLOOK_COPILOT_HOST_URL` | 内置 | Copilot host 页面地址（UI 变动时可覆盖） |
+
+> 登录态失效时（headless 落到登录页）会报错，重新运行 `outlook-copilot --login` 即可。
+
+### 方法 1：交互式刷新
 
 ```bash
 outlook-copilot --refresh
@@ -331,10 +387,12 @@ outlook-copilot-setup
 ### Token 文件位置
 
 ```
-data/tokens/
-├── token.txt            # 手动提取的 access_token
-├── token_cache.json     # 自动缓存
-└── rt_90day.txt         # 加密存储的 refresh token
+data/
+├── tokens/
+│   ├── token.txt            # 提取的 access_token
+│   ├── token_cache.json     # 自动缓存
+│   └── rt_90day.txt         # 加密存储的 refresh token
+└── browser_profile/         # 自动刷新用的持久登录浏览器 profile
 ```
 
 ---
@@ -348,13 +406,14 @@ Outlookcopilot2API/
 ├── pyproject.toml          # 项目元数据 + 依赖
 ├── README.md               # 本文件
 ├── data/
-│   └── tokens/             # Token 存储目录
+│   ├── tokens/             # Token 存储目录
+│   └── browser_profile/    # 自动刷新用的持久登录浏览器 profile
 └── src/outlook_copilot/
     ├── __init__.py         # 自动加载 .env + 导出核心模块
     ├── __main__.py         # python -m outlook_copilot
-    ├── auth.py             # Token 管理（获取 / 刷新 / 缓存）
+    ├── auth.py             # Token 管理（获取 / 刷新 / 缓存 / provider 钩子）
+    ├── browser_auth.py     # Playwright 自动抓取 access_token
     ├── client.py           # WebSocket / SignalR 客户端
-    ├── cookie_store.py     # Cookie 存储
     ├── models.py           # 模型定义 + Tone 配置
     ├── payload.py          # WS URL 构建 + 消息 Payload
     ├── scripts/
