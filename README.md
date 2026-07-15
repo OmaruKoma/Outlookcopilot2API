@@ -84,6 +84,9 @@ outlook-copilot-server --auto-refresh --port 8000
 ## CLI 用法
 
 ```bash
+# 浏览器登录（首次获取 / 更新 Token）
+outlook-copilot --login
+
 # 单次提问
 outlook-copilot "你好"
 
@@ -102,8 +105,8 @@ outlook-copilot --no-stream "你好"
 # 列出所有可用模型
 outlook-copilot --list-models
 
-# 更新过期 Token
-outlook-copilot --refresh
+# 保存 Token（从 WebSocket URL 中提取后直接传入）
+outlook-copilot --token "eyJ..."
 
 # 重新运行配置向导
 outlook-copilot --setup
@@ -139,6 +142,12 @@ OUTLOOK_COPILOT_API_KEY=your-secret-key outlook-copilot-server --host 0.0.0.0 --
 | `OUTLOOK_COPILOT_MAX_BODY_BYTES` | `10485760` | 请求体大小上限（字节） |
 | `OUTLOOK_COPILOT_SESSION_MAX` | `1000` | 会话映射最大条数 |
 | `OUTLOOK_COPILOT_SESSION_TTL` | `3600` | 会话映射过期时间（秒） |
+| `OUTLOOK_COPILOT_SESSION_ID` | （空） | 服务端默认会话 ID |
+| `OUTLOOK_COPILOT_AUTO_REFRESH` | `0` | 设为 `1` 开启后台自动刷新 |
+| `OUTLOOK_COPILOT_REFRESH_MARGIN` | `300` | 到期前多少秒开始刷新 |
+| `OUTLOOK_COPILOT_BROWSER_HEADLESS` | `1` | 刷新浏览器是否 headless |
+| `OUTLOOK_COPILOT_HOST_URL` | 内置 | Copilot host 页面地址（UI 变动时可覆盖） |
+| `OUTLOOK_COPILOT_BROWSER_DEBUG` | `0` | 设为 `1` 开启浏览器调试信息 |
 
 ### 端点一览
 
@@ -352,35 +361,18 @@ outlook-copilot-server --auto-refresh --port 8000
 
 > 登录态失效时（headless 落到登录页）会报错，重新运行 `outlook-copilot --login` 即可。
 
-### 方法 1：交互式刷新
+### 方法 1：浏览器交互式登录
 
 ```bash
-outlook-copilot --refresh
+outlook-copilot --login
 ```
 
-按提示从浏览器 DevTools → Network → ws 筛选 → 刷新 → 复制新 token 粘贴。
+打开浏览器窗口，登录后自动抓取 Token 并保存。适合首次配置后单独刷新 Token 的场景。
 
-### 方法 2：从浏览器获取并直接传入
+### 方法 2：直接传入 Token
 
 ```bash
 outlook-copilot --token "eyJ..."
-```
-
-### 方法 3：OAuth 授权码流程（实验性）
-
-```bash
-outlook-copilot-setup
-```
-
-此流程会尝试打开浏览器进行 OAuth 登录，需要手动复制 authorization code。
-
-### 方法 4：Windows WAM（仅 Windows）
-
-安装 `msal[broker]` 后，`outlook-copilot-setup` 会自动尝试 WAM broker 登录：
-
-```bash
-pip install msal[broker]
-outlook-copilot-setup
 ```
 
 ### Token 文件位置
