@@ -170,6 +170,26 @@ def _extract_token_from_ws_url(ws_url):
         return None
 
 
+def _extract_oid_tenant_from_ws_url(ws_url):
+    """The substrate Chathub URL path ends with '{oid}@{tenant}'. Return
+    (oid, tenant) or (None, None)."""
+    try:
+        parsed = urllib.parse.urlparse(ws_url)
+        marker = "/m365Copilot/Chathub/"
+        idx = parsed.path.find(marker)
+        if idx < 0:
+            return None, None
+        tail = urllib.parse.unquote(parsed.path[idx + len(marker):])
+        # tail looks like 'oid@tenant' (possibly with a trailing '/')
+        tail = tail.split("/")[0]
+        if "@" not in tail:
+            return None, None
+        oid, tenant = tail.split("@", 1)
+        return (oid or None), (tenant or None)
+    except Exception:
+        return None, None
+
+
 def _find_editor(page):
     for sel in EDITOR_SELECTORS:
         loc = page.locator(sel)
@@ -235,12 +255,13 @@ def browser_full_setup():
 
             page.on("websocket", on_ws)
 
-            # ── Phase 1: Login + OID/Tenant ──
+            # Navigate straight to the Copilot host page (same as --login).
             print()
-            print("  正在打开 outlook.cloud.microsoft ...")
-            page.goto("https://outlook.cloud.microsoft", wait_until="domcontentloaded",
-                      timeout=60000)
+            print("  正在打开 Copilot 页面 ...")
+            page.goto(HOST_URL, wait_until="domcontentloaded", timeout=60000)
 
+            # If not signed in, the page redirects to the Microsoft login. Wait
+            # for the user to finish, then re-navigate to the Copilot host page.
             if "login.microsoftonline.com" in page.url:
                 print("  请在浏览器中登录 Microsoft 账户（勾选'保持登录'）...")
                 deadline = time.time() + 300
@@ -252,36 +273,13 @@ def browser_full_setup():
                 else:
                     print("  错误: 登录超时")
                     sys.exit(1)
-                page.goto("https://outlook.cloud.microsoft", wait_until="domcontentloaded",
-                          timeout=60000)
-
-            print("  正在提取租户 ID 和用户 OID ...")
-            result = page.evaluate("""() => {
-                const k = Object.keys(localStorage).find(k => k.includes('|refreshtoken|'));
-                if (!k) return null;
-                const parts = k.split('|');
-                const idParts = parts[1].split('.');
-                return {oid: idParts[0], tenant: idParts[1]};
-            }""")
-            if not (result and result.get("tenant") and result.get("oid")):
-                print("  错误: 未能从浏览器提取 OID/Tenant，请确认已登录")
-                sys.exit(1)
-
-            tenant = result["tenant"]
-            oid = result["oid"]
-            print(f"  Tenant ID: {tenant}")
-            print(f"  User OID:  {oid}")
-            save_env(tenant, oid)
-
-            # ── Phase 2: Token capture ──
-            print()
-            print("  正在导航到 Copilot 页面并抓取 access_token ...")
-            page.goto(HOST_URL, wait_until="domcontentloaded", timeout=60000)
+                page.goto(HOST_URL, wait_until="domcontentloaded", timeout=60000)
 
             if "login.microsoftonline.com" in page.url:
                 print("  错误: 浏览器未成功登录，请重试")
                 sys.exit(1)
 
+            print("  正在抓取 access_token ...")
             try:
                 page.wait_for_load_state("networkidle", timeout=30000)
             except Exception:
@@ -318,15 +316,31 @@ def browser_full_setup():
                 print("  错误: WebSocket URL 中未找到 access_token")
                 sys.exit(1)
 
+            # Decode the JWT once: it gives us exp for the cache and oid/tid as a
+            # reliable cross-check for the values parsed out of the WS URL path.
+            claims = {}
             try:
                 padded = token.split(".")[1] + "==="
                 claims = json.loads(base64.urlsafe_b64decode(padded))
-                exp = claims.get("exp", 0)
             except Exception:
-                exp = 0
+                claims = {}
+            exp = claims.get("exp", 0)
             if exp <= time.time():
                 print("  错误: 抓取的 token 已过期")
                 sys.exit(1)
+
+            # OID/tenant come straight from the WS URL path ({oid}@{tenant}),
+            # falling back to the JWT claims (oid / tid). No localStorage needed.
+            oid, tenant = _extract_oid_tenant_from_ws_url(captured["url"])
+            oid = oid or claims.get("oid")
+            tenant = tenant or claims.get("tid")
+            if not oid or not tenant:
+                print("  错误: 未能从 WebSocket URL 或 token 中解析 OID/Tenant")
+                sys.exit(1)
+
+            print(f"  Tenant ID: {tenant}")
+            print(f"  User OID:  {oid}")
+            save_env(tenant, oid)
 
             with open(token_file, "w") as f:
                 f.write(token)
