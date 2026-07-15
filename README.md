@@ -371,4 +371,4 @@ Outlookcopilot2API/
 
 - 本项目基于 [M365-Copilot2API](https://github.com/anomalyco/M365-Copilot2API) 修改
 - 感谢原作者 reverse engineering 了 M365 Copilot 的 SignalR 协议
-- 适配 Outlook OwaHub 端点，补充 Claude Opus 4.7 模型支持
+- 适配 Outlook OwaHub 端点，补充 Claude Opus 4.8 模型支持
