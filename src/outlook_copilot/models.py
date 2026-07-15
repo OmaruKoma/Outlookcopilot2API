@@ -9,7 +9,9 @@ MODELS = {
     "auto":      {"tone": "Magic",       "openai_id": "gpt-5.5"},
     "quick":     {"tone": "Chat",        "openai_id": "gpt-5.5"},
     "reasoning": {"tone": "Reasoning",   "openai_id": "gpt-5.5"},
-    "opus":      {"tone": "Claude_Opus", "openai_id": "claude-opus-4.7"},
+    "opus":      {"tone": "Claude_Opus", "openai_id": "claude-opus-4.8"},
+    "gpt-5.5":   {"tone": "Gpt_5_5_Chat",       "openai_id": "gpt-5.5"},
+    "gpt-5.6":   {"tone": "Gpt_5_6_Reasoning",   "openai_id": "gpt-5.6"},
 }
 
 TOOL_MESSAGE_TYPES = {
@@ -19,15 +21,6 @@ TOOL_MESSAGE_TYPES = {
     "TriggerPlugin": "trigger_plugin",
     "InvokeAction": "invoke_action",
 }
-
-def _require_env(key):
-    val = os.environ.get(key)
-    if not val:
-        raise ValueError(
-            f"Environment variable {key} is required.\n"
-            "Get it from: https://graph.microsoft.com/v1.0/me (id and tenantId)"
-        )
-    return val
 
 def lookup_model(model_key):
     if model_key in MODELS:

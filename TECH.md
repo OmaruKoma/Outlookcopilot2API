@@ -104,7 +104,7 @@ wss://substrate.office.com/m365Copilot/Chathub/{oid}@{tenant}
   &agentHost=Bizchat.FullScreen
   &licenseType=Starter
   &isEdu=false
-  &agent=work
+  &agent=none
   &scenario=owahub
 ```
 
@@ -174,7 +174,9 @@ wss://substrate.office.com/m365Copilot/Chathub/{oid}@{tenant}
 | `auto` | `Magic` | 默认，自动平衡 |
 | `quick` | `Chat` | 短回复，快速 |
 | `reasoning` | `Reasoning` | 启用深度思考 |
-| `opus` | `Claude_Opus` | 启用 Claude Opus 模式 |
+| `opus` | `Claude_Opus` | 启用 Claude Opus 4.8 模式 |
+| `gpt-5.5` | `Gpt_5_5_Chat` | 启用 GPT-5.5 快速答复 |
+| `gpt-5.6` | `Gpt_5_6_Reasoning` | 启用 GPT-5.6 Think Deeper |
 
 ### 注意事项
 

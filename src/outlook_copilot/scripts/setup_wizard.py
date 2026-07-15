@@ -176,7 +176,6 @@ def token_extract_step():
     print(f"  Token 已保存 → {token_file}")
     print(f"  （{len(token)} 字符，有效期约 1 小时）")
     print(f"\n  过期后重新运行: outlook-copilot --refresh")
-    print(f"\n  过期后重新运行: outlook-copilot --refresh")
 
 
 def save_env(tenant, oid):

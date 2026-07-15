@@ -1,7 +1,7 @@
 # Outlook Copilot 2 API
 
 > 将 Microsoft 365 Outlook Copilot 的 SignalR WebSocket 协议包装成 OpenAI / Anthropic 兼容的 HTTP API。  
-> 基于 [M365-Copilot2API](https://github.com/anomalyco/M365-Copilot2API) 修改，适配 Outlook OwaHub 端点并支持 **Claude Opus 4.7** 模型。
+> 基于 [M365-Copilot2API](https://github.com/anomalyco/M365-Copilot2API) 修改，适配 Outlook OwaHub 端点，支持 **Claude Opus 4.7** 及 **GPT-5.5 / GPT-5.6** 模型。
 
 ---
 
@@ -10,7 +10,7 @@
 - **OpenAI 兼容** — `/v1/chat/completions`、`/v1/completions`（FIM）
 - **Anthropic 兼容** — `/v1/messages`、`/v1/complete`
 - **流式 & 非流式** — SSE 流式输出，支持 `stream=true`
-- **多模型** — `auto`、`quick`、`reasoning`、`opus`（Claude Opus 4.7）
+- **多模型** — `auto`、`quick`、`reasoning`、`opus`、`gpt-5.5`、`gpt-5.6`
 - **对话模式** — 多轮对话共享上下文
 - **Tool Calls** — 搜索、代码解释器、图片生成等工具调用透传
 - **CLI + API Server** — 命令行直接提问 / 启动独立 HTTP 服务
@@ -117,10 +117,29 @@ outlook-copilot --setup
 启动 HTTP 服务：
 
 ```bash
-outlook-copilot-server --host 0.0.0.0 --port 8000
+# 默认仅监听本机 (127.0.0.1)，安全
+outlook-copilot-server --port 8000
+
+# 对外暴露（局域网/公网）——务必同时设置 API Key 鉴权
+OUTLOOK_COPILOT_API_KEY=your-secret-key outlook-copilot-server --host 0.0.0.0 --port 8000
 ```
 
 首次启动需先完成配置，否则会提示运行 `outlook-copilot-setup`。
+
+> **安全提示**：服务默认无鉴权。若绑定到非本机地址（如 `0.0.0.0`），
+> 任何能访问该端口的人都能用你的 M365 token 发请求。此时请务必设置环境变量
+> `OUTLOOK_COPILOT_API_KEY`，所有 `/v1/*` 请求需携带 `Authorization: Bearer <key>`。
+> 未设置且绑定非 loopback 地址时，启动会打印告警。
+
+### 可选环境变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `OUTLOOK_COPILOT_API_KEY` | （空） | 设置后所有 `/v1/*` 请求需 Bearer 鉴权 |
+| `OUTLOOK_COPILOT_POOL_SIZE` | `8` | 客户端池大小 = 最大并发上游请求数 |
+| `OUTLOOK_COPILOT_MAX_BODY_BYTES` | `10485760` | 请求体大小上限（字节） |
+| `OUTLOOK_COPILOT_SESSION_MAX` | `1000` | 会话映射最大条数 |
+| `OUTLOOK_COPILOT_SESSION_TTL` | `3600` | 会话映射过期时间（秒） |
 
 ### 端点一览
 
@@ -140,9 +159,11 @@ outlook-copilot-server --host 0.0.0.0 --port 8000
 | `auto` | `Magic` | `gpt-5.5` | 默认，自动平衡 |
 | `quick` | `Chat` | `gpt-5.5` | 快速简短回复 |
 | `reasoning` | `Reasoning` | `gpt-5.5` | 深度推理模式 |
-| `opus` | `Claude_Opus` | `claude-opus-4.7` | **Claude Opus 4.7**（Outlook Copilot 特有） |
+| `opus` | `Claude_Opus` | `claude-opus-4.8` | **Claude Opus 4.8**（Outlook Copilot 特有） |
+| `gpt-5.5` | `Gpt_5_5_Chat` | `gpt-5.5` | **GPT-5.5 快速答复** |
+| `gpt-5.6` | `Gpt_5_6_Reasoning` | `gpt-5.6` | **GPT-5.6 Think Deeper** |
 
-> Anthropic 端点会自动映射模型名：`claude-opus-4.7` → `opus`，`gpt-5.5` / `gpt-5` / `gpt-4` → `auto`
+> Anthropic 端点会自动映射模型名：`claude-opus-4.8` / `claude-opus-4.7` → `opus`，`gpt-5.6` → `gpt-5.6`，`gpt-5.5` / `gpt-5` / `gpt-4` → `auto`
 
 ### OpenAI Chat 调用示例
 

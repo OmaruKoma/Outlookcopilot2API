@@ -199,7 +199,7 @@ def build_conversation_payload(hex_sid, uuid_sid, messages, tone="Magic"):
             m365_history.append({
                 "author": "user",
                 "inputMethod": "Keyboard",
-                "text": content or last_text,
+                "text": content,
                 "messageType": "Chat",
                 "experienceType": "Default",
                 "adaptiveCards": [],

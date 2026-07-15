@@ -89,6 +89,11 @@ class TokenManager:
                 return cache['access_token']
         except Exception:
             pass
+        if not os.path.exists(self.rt_file):
+            raise TokenRefreshError(
+                "Refresh token not found. "
+                "If your access token expired, run: outlook-copilot --refresh"
+            )
         return self.refresh()
 
     @staticmethod

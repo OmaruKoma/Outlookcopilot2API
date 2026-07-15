@@ -12,6 +12,11 @@ dependencies = [
     "cryptography>=41",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+]
+
 [project.scripts]
 outlook-copilot = "outlook_copilot.servers.cli:main"
 outlook-copilot-server = "outlook_copilot.servers.openai:main"
@@ -19,3 +24,7 @@ outlook-copilot-setup = "outlook_copilot.scripts.setup_wizard:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

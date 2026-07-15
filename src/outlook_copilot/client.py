@@ -26,6 +26,19 @@ def _clean_citations(text):
     )
 
 
+def clean_chunk(text):
+    """Clean a single streaming chunk: strip non-printable control chars and
+    citation markers, without trimming surrounding whitespace (which matters
+    across chunk boundaries). Mirrors clean_text's filtering for consistency
+    between streaming and non-streaming paths."""
+    if not text:
+        return ""
+    if isinstance(text, bytes):
+        text = text.decode("utf-8", errors="ignore")
+    text = "".join(c for c in text if c.isprintable() or c in "\n\t\r")
+    return _clean_citations(text)
+
+
 def extract_tool_call(msg):
     mtype = msg.get("messageType", "")
     text = msg.get("text", "")
@@ -163,11 +176,14 @@ class M365Client:
                                 else:
                                     chunk = new_text
                                 self._last_full_text = new_text
+                                chunk = clean_chunk(chunk)
                                 if chunk:
                                     yield (chunk, False)
                         if "writeAtCursor" in arg:
                             self._last_full_text += arg["writeAtCursor"]
-                            yield (arg["writeAtCursor"], False)
+                            cursor = clean_chunk(arg["writeAtCursor"])
+                            if cursor:
+                                yield (cursor, False)
                 elif data.get("type") == 3:
                     self._mark_dirty()
                     yield ("", True)
@@ -224,11 +240,14 @@ class M365Client:
                                 else:
                                     chunk = new_text
                                 self._last_full_text = new_text
+                                chunk = clean_chunk(chunk)
                                 if chunk:
                                     yield (chunk, False)
                         if "writeAtCursor" in arg:
                             self._last_full_text += arg["writeAtCursor"]
-                            yield (arg["writeAtCursor"], False)
+                            cursor = clean_chunk(arg["writeAtCursor"])
+                            if cursor:
+                                yield (cursor, False)
                 elif mt == 3:
                     self._last_tool_calls = tool_calls
                     self._last_finish_reason = "tool_calls" if tool_calls else "stop"
@@ -266,3 +285,6 @@ class M365Client:
                 elif mt == 3:
                     self._mark_dirty()
                     return full_text
+                elif mt == -1:
+                    self._invalidate_ws()
+                    raise RuntimeError(str(data)[:200])

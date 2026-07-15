@@ -59,14 +59,16 @@ def main():
         print("Run: outlook-copilot-setup")
         return
 
+    _configured = os.path.exists(RT_FILE) or (TOKEN_FILE and os.path.exists(TOKEN_FILE))
+
     if not args.prompt and not args.interactive:
-        if not os.path.exists(RT_FILE):
+        if not _configured:
             print("First time: outlook-copilot-setup")
             return
         parser.print_help()
         return
 
-    if not os.path.exists(RT_FILE):
+    if not _configured:
         print("First time: outlook-copilot-setup")
         return
 
